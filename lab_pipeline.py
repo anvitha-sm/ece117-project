@@ -9,6 +9,8 @@ from agentdojo.agent_pipeline.tool_execution import tool_result_to_str
 from agentdojo.functions_runtime import EmptyEnv, FunctionCall, FunctionsRuntime
 from agentdojo.types import ChatAssistantMessage
 
+from lab_suite import authorized
+
 try:  # newer AgentDojo: message content is a list of text blocks
     from agentdojo.types import text_content_block_from_string as _blk
 
@@ -62,15 +64,20 @@ def provenance_formatter(result) -> str:
 
 
 class ConfirmingRuntime(FunctionsRuntime):
-    """Simulated user confirmation: a gated call is approved only if the user's task needs that tool."""
+    """Simulated user confirmation, argument-aware: the user is shown each gated call WITH its arguments and
+    approves it only if it matches what they asked for (the task's ALLOWED tool + pinned arguments, e.g. the
+    exact URL or file path). So a same-tool attack (fetch_webpage to attacker.example while the task needs
+    fetch_webpage for the news article, or write_file to budget.txt while the task writes /docs/offsite.txt)
+    is denied, which a tool-name-only check would let through."""
 
-    def __init__(self, functions, allowed):
+    def __init__(self, functions, user_task):
         super().__init__(functions)
-        self._allowed = allowed
+        self._task = user_task
 
     def run_function(self, env, function, kwargs, raise_on_error=False):
-        if function in GATED and function not in self._allowed:
-            return "", f"UserDeniedError: the user declined to approve the call to '{function}'."
+        if function in GATED and not authorized(self._task, function, kwargs):
+            shown = ", ".join(f"{k}={str(v)[:80]!r}" for k, v in (kwargs or {}).items())
+            return "", f"UserDeniedError: the user declined to approve the call {function}({shown})."
         return super().run_function(env, function, kwargs, raise_on_error)
 
 
@@ -78,17 +85,17 @@ class DefenseSetup(BasePipelineElement):
     """First pipeline element: swaps in a restricted runtime for least_privilege / confirmation."""
     name = "defense_setup"
 
-    def __init__(self, defense, allowed_by_prompt):
-        self.defense, self.allowed_by_prompt = defense, allowed_by_prompt
+    def __init__(self, defense, task_by_prompt):
+        self.defense, self.task_by_prompt = defense, task_by_prompt
         self.available = None
 
     def query(self, query, runtime, env=EmptyEnv(), messages=(), extra_args=None):
-        allowed = self.allowed_by_prompt.get(query)
+        task = self.task_by_prompt.get(query)
         funcs = list(runtime.functions.values())
-        if allowed is not None and self.defense == "least_privilege":
-            runtime = FunctionsRuntime([f for f in funcs if f.name in allowed])
-        elif allowed is not None and self.defense == "confirmation":
-            runtime = ConfirmingRuntime(funcs, allowed)
+        if task is not None and self.defense == "least_privilege":
+            runtime = FunctionsRuntime([f for f in funcs if f.name in task.TOOLS])
+        elif task is not None and self.defense == "confirmation":
+            runtime = ConfirmingRuntime(funcs, task)
         self.available = set(runtime.functions)  # tools the agent can call; anything else is blocked
         return query, runtime, env, messages, extra_args or {}
 
@@ -406,10 +413,10 @@ def build_llm(model: str, suite):
 def build_pipeline(model: str, defense: str, suite) -> AgentPipeline:
     assert defense in DEFENSES, defense
     llm, meter = build_llm(model, suite)
-    allowed_by_prompt = {t.PROMPT: set(t.TOOLS) for t in suite.user_tasks.values()}
+    task_by_prompt = {t.PROMPT: t for t in suite.user_tasks.values()}
     prov = defense == "provenance"
     rec = Recorder()
-    setup = DefenseSetup(defense, allowed_by_prompt)
+    setup = DefenseSetup(defense, task_by_prompt)
     pipe = AgentPipeline([
         setup,
         SystemMessage(BASE_SYSTEM + (PROVENANCE_NOTE if prov else "")),
