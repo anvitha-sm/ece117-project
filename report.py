@@ -92,9 +92,9 @@ if HAS_NEW:
     ref_u = mean([r for r in base if r["defense"] == "none"], "utility")
     md.append("\n## Defense false positives and utility cost\n\n"
               "False positive = a call the user's prompt authorized that the defense blocked. Defenses that block nothing "
-              "(`provenance`) show their cost only as lost utility. Here `confirmation` and `least_privilege` allow exactly the "
-              "task's tool set, so they cannot block an authorized call by construction; this column matters for real or "
-              "stricter defenses.\n\n"
+              "(`provenance`) show their cost only as lost utility. Here `least_privilege` allows exactly the task's tool set "
+              "and `confirmation` approves exactly the task's authorized calls (tool + pinned arguments), so neither can "
+              "block an authorized call by construction; this column matters for real or stricter defenses.\n\n"
               "| defense | legit calls blocked | benign runs with a legit call blocked | benign utility | benign utility vs none "
               "| utility under attack |\n|---|---|---|---|---|---|")
     for d in defenses:
